@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import StrEnum
 import logging
-from typing import Any, Final, Optional, cast
+from typing import Any, Final, cast
 import uuid
 
 import voluptuous as vol
@@ -101,7 +101,7 @@ async def async_zabbix_sensors(
                 _LOGGER.debug("Creating Zabbix Sensor: %s", str(hostid))
                 # get hostname from hostid
                 try:
-                    result: Optional[Any] = await hass.async_add_executor_job(
+                    result: Any | None = await hass.async_add_executor_job(
                         lambda local_hostid: zapi.host.get(
                             hostids=local_hostid, output="extend"
                         ),
@@ -217,7 +217,7 @@ class ZabbixTriggerCountSensor(SensorEntity):
         entry_id: str,
         configuration_url: str,
         sensor_type: ZabbixTriggerCountSensorType = ZabbixTriggerCountSensorType.DEFAULT_TYPE,
-        hostids: Optional[list[str]] = None,
+        hostids: list[str] | None = None,
     ) -> None:
         """Initialize."""
         self.zapi: ZabbixAPI = zapi
@@ -226,7 +226,7 @@ class ZabbixTriggerCountSensor(SensorEntity):
         self._attr_native_unit_of_measurement = "issues"
         self._attr_available = True
         self.sensor_type: ZabbixTriggerCountSensorType = sensor_type
-        self.hostids: Optional[list[str]] = hostids
+        self.hostids: list[str] | None = hostids
         self._attr_attributes: Mapping[str, Any]
         if self.sensor_type == ZabbixTriggerCountSensorType.SINGLE_HOST_TYPE:
             self._attr_attributes = {"Host ID": self.hostids}
@@ -251,17 +251,10 @@ class ZabbixTriggerCountSensor(SensorEntity):
         triggers: list
         _LOGGER.debug("Updating ZabbixTriggerCountSensor: %s", str(self._attr_name))
         try:
-            if self.sensor_type == ZabbixTriggerCountSensorType.SINGLE_HOST_TYPE:
-                triggers = await self.hass.async_add_executor_job(
-                    lambda: self.zapi.trigger.get(
-                        hostids=self.hostids,
-                        output="extend",
-                        only_true=1,
-                        monitored=1,
-                        filter={"value": 1},
-                    )
-                )
-            elif self.sensor_type == ZabbixTriggerCountSensorType.MULTIPLE_HOST_TYPE:
+            if self.sensor_type in (
+                ZabbixTriggerCountSensorType.SINGLE_HOST_TYPE,
+                ZabbixTriggerCountSensorType.MULTIPLE_HOST_TYPE,
+            ):
                 triggers = await self.hass.async_add_executor_job(
                     lambda: self.zapi.trigger.get(
                         hostids=self.hostids,

@@ -1,14 +1,15 @@
 """Config flow for zabbix integration."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 import logging
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import voluptuous as vol
 from zabbix_utils import APIRequestError, ProcessingError, ZabbixAPI
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import (
     CONF_PASSWORD,
     CONF_SENSORS,
@@ -17,7 +18,6 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import State
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entityfilter import (
     CONF_EXCLUDE_DOMAINS,
@@ -115,7 +115,7 @@ STEP_PUBLISH_STATES_HOST_NO_API = vol.Schema(
 async def create_template(self) -> str:
     """Try to create in Zabbix a hostname to be used to receive entities data with the linked template."""
 
-    result: Optional[Any]
+    result: Any | None
     templateid: str
     ruleid: str
 
@@ -169,7 +169,7 @@ async def create_template(self) -> str:
 async def create_hostname(self, user_input: dict[str, Any], templateid: str) -> str:
     """Try to create in Zabbix a hostname to be used to receive entities data with the linked template."""
 
-    result: Optional[Any]
+    result: Any | None
     groupid: str
 
     # Check if template already exists
@@ -201,16 +201,16 @@ async def create_hostname(self, user_input: dict[str, Any], templateid: str) -> 
     return result["hostids"][0]
 
 
-class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for zabbix."""
 
     VERSION = 1
-    data: Optional[dict[str, Any]]
+    data: dict[str, Any] | None
     zabbix_api: Any
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step and ask for the URL to connect. Same host is used for zabbxi sender."""
         errors: dict[str, str] = {}
         description_placeholders: dict[str, str] = {}
@@ -245,7 +245,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_token_or_userpass(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask if token or user/pass to be used (step not shown if zabbix version is below 5.4)."""
         errors: dict[str, str] = {}
 
@@ -265,7 +265,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_token(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for token."""
         errors: dict[str, str] = {}
         description_placeholders: dict[str, str] = {}
@@ -296,7 +296,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_userpass(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for username and password."""
         errors: dict[str, str] = {}
         description_placeholders: dict[str, str] = {}
@@ -332,10 +332,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_publish_states_host(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for hostname configured in Zabbix to send Home Assistant entities states."""
         errors: dict[str, str] = {}
-        result: Optional[Any]
+        result: Any | None
         def_publish_host: str
         templateid: str
         skip_creation: bool = False
@@ -435,7 +435,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_publish_states_host_no_api(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for hostname configured in Zabbix to send Home Assistant entities states. No checks as no API."""
         errors: dict[str, str] = {}
 
@@ -454,7 +454,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_include_exclude_filter(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for any include or exclude filters to be used when sending entities update to Zabbix."""
         errors: dict[str, str] = {}
         domains: list[str] = []
@@ -514,12 +514,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_sensor_filter(
         self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    ) -> ConfigFlowResult:
         """Ask for sensor configuration parameters for Zabbix triggers."""
         errors: dict[str, str] = {}
         hosts: list[SelectOptionDict] = []
-        result: Optional[Any] = None
-        result_element: dict[str, str]
+        result: Any | None = None
+        # result_element: dict[str, str]
         description_placeholders: dict[str, str] = {}
 
         assert isinstance(self.data, dict)
@@ -568,12 +568,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     lambda: self.zabbix_api.host.get(output=["hostid", "host"])
                 )
                 assert isinstance(result, list)
-                for result_element in result:
-                    hosts.append(
-                        SelectOptionDict(
-                            value=result_element["hostid"], label=result_element["host"]
-                        )
+                # for result_element in result:
+                #    hosts.append(
+                #        SelectOptionDict(
+                #            value=result_element["hostid"], label=result_element["host"]
+                #        )
+                #    )
+                hosts.extend(
+                    SelectOptionDict(
+                        value=result_element["hostid"], label=result_element["host"]
                     )
+                    for result_element in result
+                )
                 self.data[ALL_ZABBIX_HOSTS] = hosts
             except (APIRequestError, ProcessingError) as e:
                 # No zabbix permissions to read data
