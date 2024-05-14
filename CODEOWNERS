@@ -1365,8 +1365,8 @@ build.json @home-assistant/supervisor
 /tests/components/switchbee/ @jafar-atili
 /homeassistant/components/switchbot/ @danielhiversen @RenierM26 @murtas @Eloston @dsypniewski
 /tests/components/switchbot/ @danielhiversen @RenierM26 @murtas @Eloston @dsypniewski
-/homeassistant/components/switchbot_cloud/ @SeraphicRav
-/tests/components/switchbot_cloud/ @SeraphicRav
+/homeassistant/components/switchbot_cloud/ @SeraphicRav @laurence-presland
+/tests/components/switchbot_cloud/ @SeraphicRav @laurence-presland
 /homeassistant/components/switcher_kis/ @thecode
 /tests/components/switcher_kis/ @thecode
 /homeassistant/components/switchmate/ @danielhiversen @qiz-li
@@ -1523,6 +1523,8 @@ build.json @home-assistant/supervisor
 /tests/components/version/ @ludeeus
 /homeassistant/components/vesync/ @markperdue @webdjoe @thegardenmonkey @cdnninja
 /tests/components/vesync/ @markperdue @webdjoe @thegardenmonkey @cdnninja
+/homeassistant/components/viam/ @hipsterbrown
+/tests/components/viam/ @hipsterbrown
 /homeassistant/components/vicare/ @CFenner
 /tests/components/vicare/ @CFenner
 /homeassistant/components/vilfo/ @ManneW
