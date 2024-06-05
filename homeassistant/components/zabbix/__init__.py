@@ -1,4 +1,5 @@
 """Support for Zabbix."""
+
 import asyncio
 from contextlib import suppress
 import json
@@ -96,6 +97,11 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
+async def options_update_listener(hass: HomeAssistant, config_entry: ConfigEntry):
+    """Handle options update."""
+    # await hass.config_entries.async_reload(config_entry.entry_id)
+
+
 def event_to_metrics(
     event, float_keys, string_keys, entities_filter, publish_states_host
 ):
@@ -132,28 +138,28 @@ def event_to_metrics(
             strings[attribute_id] = str(value)
         else:
             floats[attribute_id] = float_value
+    metrics = []
+    float_keys_count = len(float_keys)
+    float_keys.update(floats)
+    if len(float_keys) != float_keys_count:
+        floats_discovery = [
+            {"{#KEY}": str(float_key)[:230]} for float_key in float_keys
+        ]
+        metric = ItemValue(
+            publish_states_host,
+            "homeassistant.floats_discovery",
+            json.dumps(floats_discovery),
+        )
+        metrics.append(metric)
+    for key, value in floats.items():
+        metric = ItemValue(
+            publish_states_host, f"homeassistant.float[{str(key)[:230]}]", value
+        )
+        metrics.append(metric)
 
-        metrics = []
-        float_keys_count = len(float_keys)
-        float_keys.update(floats)
-        if len(float_keys) != float_keys_count:
-            floats_discovery = [
-                {"{#KEY}": str(float_key)[:230]} for float_key in float_keys
-            ]
-            metric = ItemValue(
-                publish_states_host,
-                "homeassistant.floats_discovery",
-                json.dumps(floats_discovery),
-            )
-            metrics.append(metric)
-        for key, value in floats.items():
-            metric = ItemValue(
-                publish_states_host, f"homeassistant.float[{str(key)[:230]}]", value
-            )
-            metrics.append(metric)
+    string_keys.update(strings)
 
-        string_keys.update(strings)
-        return metrics
+    return metrics
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -166,7 +172,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     new_config: bool = hass.data[DOMAIN].get(NEW_CONFIG)
-    # Already configured from configuration.yaml. Probably no need, but to be sure, to be sure.
+    # Already configured from configuration.yaml. Not allow UI config.
     if not new_config:
         return True
 
@@ -239,10 +245,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info("Connected to Zabbix API Version %s", zapi.api_version())
         except APIRequestError as login_exception:
             _LOGGER.error("Unable to login to the Zabbix API: %s", login_exception)
+            hass.data[DOMAIN][entry.entry_id][ZAPI] = None
             return False
         except ProcessingError as http_error:
             _LOGGER.error("HTTPError when connecting to Zabbix API: %s", http_error)
-            zapi = None
+            hass.data[DOMAIN][entry.entry_id][ZAPI] = None
             return False
 
         # Forward the setup to the sensor platform.
@@ -252,11 +259,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     return True
-
-
-async def options_update_listener(hass: HomeAssistant, config_entry: ConfigEntry):
-    """Handle options update."""
-    await hass.config_entries.async_reload(config_entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -275,8 +277,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Remove Zabbix thread if was running
     if entry.entry_id in hass.data[DOMAIN]:
         instance = hass.data[DOMAIN][entry.entry_id][ZABBIX_THREAD_INSTANCE]
-    else:
-        instance = hass.data[DOMAIN][ZABBIX_THREAD_INSTANCE]
+    # else:
+    #    instance = hass.data[DOMAIN][ZABBIX_THREAD_INSTANCE]
     if instance is not None:
         instance.thread_shutdown()
 
@@ -285,18 +287,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if hass.data[DOMAIN][entry.entry_id].get(CONF_USE_TOKEN) is False:
             if zapi := hass.data[DOMAIN][entry.entry_id].get(ZAPI, None):
                 await hass.async_add_executor_job(zapi.logout)
-    elif hass.data[DOMAIN].get(CONF_USE_TOKEN) is False:
-        if zapi := hass.data[DOMAIN].get(ZAPI, None):
-            await hass.async_add_executor_job(zapi.logout)
+    # elif hass.data[DOMAIN].get(CONF_USE_TOKEN) is False:
+    #    if zapi := hass.data[DOMAIN].get(ZAPI, None):
+    #        await hass.async_add_executor_job(zapi.logout)
 
     # Remove DOMAIN with config entry from hass.
     if unload_ok:
         if entry.entry_id in hass.data[DOMAIN]:
             hass.data[DOMAIN].pop(entry.entry_id)
-        else:
-            hass.data.pop(DOMAIN)
+    #    else:
+    #        hass.data.pop(DOMAIN)
 
     return unload_ok
+
+
+async def async_start_retry(msg: str, hass: HomeAssistant, config: ConfigType) -> None:
+    """Retry setup if failed."""
+    await hass.async_add_executor_job(
+        event_helper.call_later,  # type: ignore[arg-type]
+        hass,
+        RETRY_INTERVAL,
+        lambda _: async_setup(hass, config),
+    )
+    _LOGGER.error(RETRY_MESSAGE, msg)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -330,13 +343,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     # If not zabbix sensors, then skip starting ZabbixAPI
     def zabbix_sensor_exists(platforms: list[dict]) -> bool:
-        for element in platforms:
-            if element.get("platform") == "zabbix":
-                return True
-        return False
+        return any(element.get("platform") == "zabbix" for element in platforms)
 
+    # If there is zabbix sensor part in configuration.yaml, try to connect to ZabbixAPI
     if config.get("sensor") is not None:
-        if zabbix_sensor_exists(cast(list[dict], config.get("sensor"))):
+        if (
+            zabbix_sensor_exists(cast(list[dict], config.get("sensor")))
+            and hass.data[DOMAIN].get(ZAPI, None) is None
+        ):
             try:
                 zapi = await hass.async_add_executor_job(lambda: ZabbixAPI(url=url))
                 await hass.async_add_executor_job(
@@ -349,24 +363,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 _LOGGER.info("Connected to Zabbix API Version %s", zapi.api_version())
             except APIRequestError as login_exception:
                 _LOGGER.error("Unable to login to the Zabbix API: %s", login_exception)
-                return False
+                zapi = None
+                await async_start_retry(login_exception, hass, config)
             except ProcessingError as http_error:
                 _LOGGER.error("HTTPError when connecting to Zabbix API: %s", http_error)
                 zapi = None
-                _LOGGER.error(RETRY_MESSAGE, http_error)
-                await event_helper.call_later(  # type: ignore[misc]
-                    hass,
-                    RETRY_INTERVAL,
-                    lambda _: async_setup(hass, config),  # type: ignore[arg-type,return-value]
-                )
-                return True
+                await async_start_retry(http_error, hass, config)
 
     hass.data[DOMAIN] = conf
     hass.data[DOMAIN][ZAPI] = zapi
     hass.data[DOMAIN][ENTITIES_FILTER] = entities_filter
     hass.data[DOMAIN][NEW_CONFIG] = False
 
-    if publish_states_host:
+    # If zabbix thread not yet started
+    if (
+        publish_states_host
+        and hass.data[DOMAIN].get(ZABBIX_THREAD_INSTANCE, None) is None
+    ):
         zabbix_sender = await hass.async_add_executor_job(
             lambda: Sender(server=conf[CONF_HOST], port=DEFAULT_ZABBIX_SENDER_PORT)
         )
@@ -428,13 +441,13 @@ class ZabbixThread(threading.Thread):
     @callback
     def _event_listener(self, event) -> None:
         """Listen for new messages on the bus and queue them for Zabbix."""
-        item = (time.monotonic(), event)
+        # item = (time.monotonic(), event)
+        item = (event.time_fired_timestamp, event)
         self.queue.put(item)
 
     def get_metrics(self):
         """Return a batch of events formatted for writing."""
         queue_seconds: int = QUEUE_BACKLOG_SECONDS + self.MAX_TRIES * RETRY_DELAY
-
         count: int = 0
         metrics: list[ItemValue] = []
 
@@ -450,8 +463,8 @@ class ZabbixThread(threading.Thread):
                     self.shutdown = True
                 else:
                     timestamp, event = item
-                    age = time.monotonic() - timestamp
-
+                    # age = time.monotonic() - timestamp
+                    age = time.time() - timestamp
                     if age < queue_seconds:
                         event_metrics = event_to_metrics(
                             event,
@@ -483,7 +496,7 @@ class ZabbixThread(threading.Thread):
 
                 _LOGGER.debug("Wrote %d metrics", len(metrics))
                 break
-            except (
+            except (  # noqa: UP041
                 json.decoder.JSONDecodeError,
                 ProcessingError,
                 TimeoutError,

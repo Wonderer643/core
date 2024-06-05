@@ -82,17 +82,19 @@ async def async_zabbix_sensors(
 
     # The following code seems overly complex. Need to think about this...
     if trigger_conf := config.get(CONF_SENSOR_TRIGGERS):
-        hostids = cast(list[str], trigger_conf.get(CONF_SENSOR_TRIGGERS_HOSTIDS))
-        individual = cast(bool, trigger_conf.get(CONF_SENSOR_TRIGGERS_INDIVIDUAL))
+        hostids = cast(list[str], trigger_conf.get(CONF_SENSOR_TRIGGERS_HOSTIDS, []))
+        individual = cast(
+            bool, trigger_conf.get(CONF_SENSOR_TRIGGERS_INDIVIDUAL, False)
+        )
         name = cast(
             str, trigger_conf.get(CONF_SENSOR_TRIGGERS_NAME, DEFAULT_TRIGGER_NAME)
         )
-        if name is None:
+        if name == "":
             name = DEFAULT_TRIGGER_NAME
 
         if individual:
             # Individual sensor per host
-            if not hostids:
+            if not hostids or len(hostids) == 0:
                 # We need hostids
                 _LOGGER.error("If using 'individual', must specify hostids")
                 return None
@@ -124,7 +126,7 @@ async def async_zabbix_sensors(
                         str(hostid),
                         str(e),
                     )
-        elif not hostids:
+        elif not hostids or len(hostids) == 0:
             # Single sensor that provides the total count of triggers.
             _LOGGER.debug("Creating Zabbix Sensor")
             zabbix_sensor = ZabbixTriggerCountSensor(
@@ -161,7 +163,7 @@ async def async_zabbix_sensors(
         # Single sensor that provides the total count of triggers.
         _LOGGER.debug("Creating Zabbix Sensor")
         zabbix_sensor = ZabbixTriggerCountSensor(
-            zapi, name, entry_id, configuration_url
+            zapi, DEFAULT_TRIGGER_NAME, entry_id, configuration_url
         )
         sensors.append(zabbix_sensor)
 

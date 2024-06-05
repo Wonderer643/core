@@ -17,8 +17,7 @@ from homeassistant.const import (
     CONF_URL,
     CONF_USERNAME,
 )
-from homeassistant.core import State
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers.entityfilter import (
     CONF_EXCLUDE_DOMAINS,
     CONF_EXCLUDE_ENTITIES,
@@ -112,7 +111,7 @@ STEP_PUBLISH_STATES_HOST_NO_API = vol.Schema(
 )
 
 
-async def create_template(self) -> str:
+async def create_template(zabbix_api: ZabbixAPI, hass: HomeAssistant) -> str:
     """Try to create in Zabbix a hostname to be used to receive entities data with the linked template."""
 
     result: Any | None
@@ -121,25 +120,27 @@ async def create_template(self) -> str:
 
     # Check if template already exists
     try:
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.template.get(
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.template.get(
                 output=["templateid", "name"],
                 filter={"host": DEFAULT_ZABBIX_TEMPLATE_NAME},
             )
         )
+        assert isinstance(result, list)
         templateid = result[0]["templateid"]
     except (IndexError, KeyError):
         # Create template as not existing
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.template.create(
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.template.create(
                 host=DEFAULT_ZABBIX_TEMPLATE_NAME,
                 name=DEFAULT_ZABBIX_TEMPLATE_NAME,
                 groups={"groupid": 1},
             ),
         )
+        assert isinstance(result, dict)
         templateid = result["templateids"][0]
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.discoveryrule.create(
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.discoveryrule.create(
                 name="Floats Discovery",
                 key="homeassistant.floats_discovery",
                 hostid=templateid,
@@ -147,9 +148,10 @@ async def create_template(self) -> str:
                 delay=0,
             ),
         )
+        assert isinstance(result, dict)
         ruleid = result["itemids"][0]
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.itemprototype.create(
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.itemprototype.create(
                 ruleid=ruleid,
                 hostid=templateid,
                 name="{#KEY}",
@@ -166,7 +168,12 @@ async def create_template(self) -> str:
     return templateid
 
 
-async def create_hostname(self, user_input: dict[str, Any], templateid: str) -> str:
+async def create_hostname(
+    zabbix_api: ZabbixAPI,
+    hass: HomeAssistant,
+    user_input: dict[str, Any],
+    templateid: str,
+) -> str:
     """Try to create in Zabbix a hostname to be used to receive entities data with the linked template."""
 
     result: Any | None
@@ -174,39 +181,76 @@ async def create_hostname(self, user_input: dict[str, Any], templateid: str) -> 
 
     # Check if template already exists
     try:
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.hostgroup.get(
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.hostgroup.get(
                 output=["groupid", "name"],
                 filter={"name": DEFAULT_ZABBIX_HOSTGROUP_NAME},
             )
         )
+        assert isinstance(result, list)
         groupid = result[0]["groupid"]
     except (IndexError, KeyError):
         # No such SHost group - create.
-        result = await self.hass.async_add_executor_job(
-            lambda: self.zabbix_api.hostgroup.create(
-                name=DEFAULT_ZABBIX_HOSTGROUP_NAME
-            ),
+        result = await hass.async_add_executor_job(
+            lambda: zabbix_api.hostgroup.create(name=DEFAULT_ZABBIX_HOSTGROUP_NAME),
         )
+        assert isinstance(result, dict)
         groupid = result["groupids"][0]
 
-    result = await self.hass.async_add_executor_job(
-        lambda: self.zabbix_api.host.create(
+    result = await hass.async_add_executor_job(
+        lambda: zabbix_api.host.create(
             host=user_input[CONF_PUBLISH_STATES_HOST],
             name=user_input[CONF_PUBLISH_STATES_HOST],
             groups={"groupid": groupid},
             templates={"templateid": templateid},
         ),
     )
+    assert isinstance(result, dict)
     return result["hostids"][0]
+
+
+async def zabbix_api_login(hass: HomeAssistant, data: dict[str, Any]) -> ZabbixAPI:
+    """Handle login to ZabbixAPI on each Config flow step."""
+
+    zabbix_api: ZabbixAPI
+
+    zabbix_api = await hass.async_add_executor_job(
+        lambda: ZabbixAPI(url=data.get(CONF_URL))
+    )
+    if data.get(CONF_USE_TOKEN):
+        await hass.async_add_executor_job(
+            lambda: zabbix_api.login(token=data.get(CONF_TOKEN))
+        )
+    else:
+        await hass.async_add_executor_job(
+            lambda: zabbix_api.login(
+                user=data.get(CONF_USERNAME),
+                password=data.get(CONF_PASSWORD),
+            )
+        )
+    await hass.async_add_executor_job(zabbix_api.check_auth)
+
+    return zabbix_api
+
+
+async def zabbix_api_logout(
+    zabbix_api: ZabbixAPI, hass: HomeAssistant, data: dict[str, Any]
+) -> None:
+    """Handle logout from ZabbixAPI if user/password was used to login."""
+
+    if not data.get(CONF_USE_TOKEN):
+        await hass.async_add_executor_job(zabbix_api.logout)
 
 
 class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for zabbix."""
 
     VERSION = 1
-    data: dict[str, Any] | None
-    zabbix_api: Any
+    data: dict[str, Any] = {}
+
+    # def __init__(self) -> None:
+    #    """Initialize."""
+    #    self.data: dict[str, Any] = {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -218,20 +262,19 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if user_input.get(CONF_USE_API):
                 try:
-                    self.zabbix_api = await self.hass.async_add_executor_job(
+                    zabbix_api = await self.hass.async_add_executor_job(
                         lambda: ZabbixAPI(url=user_input.get(CONF_URL))
                     )
-
                 except ProcessingError as e:
                     errors["base"] = "cannot_connect"
                     description_placeholders["error"] = str(e.args)
                 else:
-                    self.data = user_input
-                    if self.zabbix_api.version >= 5.4:
+                    self.data.update(user_input)
+                    if zabbix_api.version >= 5.4:
                         return await self.async_step_token_or_userpass()
                     return await self.async_step_userpass()
             elif user_input.get(CONF_USE_SENDER):
-                self.data = user_input
+                self.data.update(user_input)
                 return await self.async_step_publish_states_host_no_api()
             else:
                 errors["base"] = "api_or_sender"
@@ -274,10 +317,7 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if len(user_input[CONF_TOKEN]) == 64:
                 try:
-                    await self.hass.async_add_executor_job(
-                        lambda: self.zabbix_api.login(token=user_input.get(CONF_TOKEN))
-                    )
-                    await self.hass.async_add_executor_job(self.zabbix_api.check_auth)
+                    await zabbix_api_login(self.hass, self.data)
                 except APIRequestError as e:
                     errors["base"] = "invalid_auth"
                     description_placeholders["error"] = str(e.args)
@@ -304,13 +344,7 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
         assert isinstance(self.data, dict)
         if user_input is not None:
             try:
-                await self.hass.async_add_executor_job(
-                    lambda: self.zabbix_api.login(
-                        user=user_input.get(CONF_USERNAME),
-                        password=user_input.get(CONF_PASSWORD),
-                    )
-                )
-                await self.hass.async_add_executor_job(self.zabbix_api.check_auth)
+                zabbix_api = await zabbix_api_login(self.hass, self.data)
             except APIRequestError as e:
                 errors["base"] = "invalid_auth"
                 description_placeholders["error"] = str(e.args)
@@ -321,6 +355,7 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_PASSWORD: user_input.get(CONF_PASSWORD),
                     }
                 )
+                await zabbix_api_logout(zabbix_api, self.hass, self.data)
                 return await self.async_step_publish_states_host()
 
         return self.async_show_form(
@@ -345,82 +380,101 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
         assert isinstance(self.data, dict)
         if not self.data.get(CONF_USE_SENDER):
             return await self.async_step_sensor_filter()
+
+        try:
+            zabbix_api = await zabbix_api_login(self.hass, self.data)
+        except APIRequestError as e:
+            errors["base"] = "invalid_auth"
+            description_placeholders["error"] = str(e.args)
+            zabbix_api = None
+
         if user_input is not None:
             if not user_input[CONF_SKIP_CREATION_PUBLISH_STATES_HOST]:
                 # Check if provided publish_states_host is already existing in Zabbix
-                try:
-                    result = await self.hass.async_add_executor_job(
-                        lambda: self.zabbix_api.host.get(
-                            output=["hostid", "host"],
-                            filter={"host": user_input.get(CONF_PUBLISH_STATES_HOST)},
-                        )
-                    )
-                    assert isinstance(result, list)
-                    def_publish_host = result[0].get("host")
-                except (APIRequestError, ProcessingError) as e:
-                    # No zabbix permissions to read data
-                    errors["base"] = "no_permission_read"
-                    description_placeholders["error"] = str(e.args)
-                except (IndexError, KeyError):
-                    # No hostname exists in Zabbix
+                if zabbix_api:
                     try:
-                        # Create or usr existing one
-                        templateid = await create_template(self)
-                    except (
-                        APIRequestError,
-                        ProcessingError,
-                        IndexError,
-                        KeyError,
-                    ) as e:
-                        # No zabbix permissions to create template and host
-                        errors["base"] = "no_permission_write"
-                        description_placeholders["error"] = str(e.args)
-                    else:
-                        # Try to create hostname with the linked template
-                        try:
-                            self.data.update(
-                                {
-                                    CONF_PUBLISH_STATES_HOSTID: await create_hostname(
-                                        self, user_input, templateid
-                                    )
-                                }
+                        result = await self.hass.async_add_executor_job(
+                            lambda: zabbix_api.host.get(
+                                output=["hostid", "host"],
+                                filter={
+                                    "host": user_input.get(CONF_PUBLISH_STATES_HOST)
+                                },
                             )
-                        except (APIRequestError, ProcessingError) as e:
+                        )
+                        assert isinstance(result, list)
+                        def_publish_host = result[0].get("host")
+                    except (APIRequestError, ProcessingError) as e:
+                        # No zabbix permissions to read data
+                        errors["base"] = "no_permission_read"
+                        description_placeholders["error"] = str(e.args)
+                    except (IndexError, KeyError):
+                        # No hostname exists in Zabbix
+                        try:
+                            # Create or usr existing one
+                            templateid = await create_template(zabbix_api, self.hass)
+                        except (
+                            APIRequestError,
+                            ProcessingError,
+                            IndexError,
+                            KeyError,
+                        ) as e:
                             # No zabbix permissions to create template and host
                             errors["base"] = "no_permission_write"
                             description_placeholders["error"] = str(e.args)
+                        else:
+                            # Try to create hostname with the linked template
+                            try:
+                                self.data.update(
+                                    {
+                                        CONF_PUBLISH_STATES_HOSTID: await create_hostname(
+                                            zabbix_api,
+                                            self.hass,
+                                            user_input,
+                                            templateid,
+                                        )
+                                    }
+                                )
+                            except (APIRequestError, ProcessingError) as e:
+                                # No zabbix permissions to create template and host
+                                errors["base"] = "no_permission_write"
+                                description_placeholders["error"] = str(e.args)
 
             if not errors:
                 # publish_states_host is existing in Zabbix so continue
                 self.data.update(
                     {CONF_PUBLISH_STATES_HOST: user_input.get(CONF_PUBLISH_STATES_HOST)}
                 )
+                if zabbix_api:
+                    await zabbix_api_logout(zabbix_api, self.hass, self.data)
                 return await self.async_step_include_exclude_filter()
 
         # Try to get the hostname from Zabbix server with the linked template 'Template Home Assistant'.
         # Assume it is created manually in zabbix by user, but get only the first host if multiple are configured.
         # Suggest it as a "default"
         # If any error - just ignore and suggest to use default name
-        try:
-            result = await self.hass.async_add_executor_job(
-                lambda: self.zabbix_api.template.get(
-                    output=["templateid", "name"],
-                    filter={"host": DEFAULT_ZABBIX_TEMPLATE_NAME},
-                    selectHosts=["hostid", "host", "name"],
+        if zabbix_api:
+            try:
+                result = await self.hass.async_add_executor_job(
+                    lambda: zabbix_api.template.get(
+                        output=["templateid", "name"],
+                        filter={"host": DEFAULT_ZABBIX_TEMPLATE_NAME},
+                        selectHosts=["hostid", "host", "name"],
+                    )
                 )
-            )
-            assert isinstance(result, list)
-            def_publish_host = result[0].get("hosts")[0].get("host")
-            skip_creation = True
-        except (IndexError, KeyError, APIRequestError, ProcessingError):
-            pass
+                await zabbix_api_logout(zabbix_api, self.hass, self.data)
+
+                assert isinstance(result, list)
+                def_publish_host = result[0].get("hosts")[0].get("host")
+                skip_creation = True
+            except (IndexError, KeyError, APIRequestError, ProcessingError):
+                pass
 
         step_publish_states_host_schema = vol.Schema(
             {
                 vol.Required(
                     CONF_PUBLISH_STATES_HOST, default=def_publish_host
                 ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
-                vol.Required(
+                vol.Optional(
                     CONF_SKIP_CREATION_PUBLISH_STATES_HOST, default=skip_creation
                 ): BooleanSelector(BooleanSelectorConfig()),
             }
@@ -564,16 +618,12 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
         # Get list of hosts from Zabbix
         if not self.data.get(ALL_ZABBIX_HOSTS):
             try:
+                zabbix_api = await zabbix_api_login(self.hass, self.data)
                 result = await self.hass.async_add_executor_job(
-                    lambda: self.zabbix_api.host.get(output=["hostid", "host"])
+                    lambda: zabbix_api.host.get(output=["hostid", "host"])
                 )
+                await zabbix_api_logout(zabbix_api, self.hass, self.data)
                 assert isinstance(result, list)
-                # for result_element in result:
-                #    hosts.append(
-                #        SelectOptionDict(
-                #            value=result_element["hostid"], label=result_element["host"]
-                #        )
-                #    )
                 hosts.extend(
                     SelectOptionDict(
                         value=result_element["hostid"], label=result_element["host"]
@@ -583,6 +633,7 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
                 self.data[ALL_ZABBIX_HOSTS] = hosts
             except (APIRequestError, ProcessingError) as e:
                 # No zabbix permissions to read data
+                self.data[ALL_ZABBIX_HOSTS] = []
                 errors["base"] = "no_permission_read"
                 description_placeholders["error"] = str(e.args)
 
@@ -648,11 +699,3 @@ class ZabbixConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders=description_placeholders,
         )
-
-
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
-
-
-class InvalidAuth(HomeAssistantError):
-    """Error to indicate there is invalid auth."""
